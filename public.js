@@ -1,7 +1,9 @@
 ﻿(function () {
   const STORAGE_KEYS = {
     products: 'produtos',
-    orders: 'pedidos_publico'
+    orders: 'pedidos_publico',
+    cart: 'carrinho_publico',
+    cartSession: 'cart_session_id'
   };
 
   const fallbackImage = 'img/placeholder.jpg';
@@ -16,8 +18,9 @@
   let products = [];
   let cart = [];
   let categoryFilter = '';
-  let db = null;
-  let firebaseEnabled = false;
+  let cartSessionId = '';
+  let supabaseClient = null;
+  let supabaseEnabled = false;
 
   function parseMoney(value) {
     const txt = String(value || '').trim().replace(/[^\d.,-]/g, '');
@@ -36,6 +39,38 @@
 
   function money(v) {
     return parseMoney(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  }
+
+  function normalizeVariantList(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map(v => {
+        if (!v || !v.label) return null;
+        const stock = v.stock === null || v.stock === undefined ? null : Math.max(0, parseInt(v.stock, 10) || 0);
+        return { label: String(v.label).trim(), stock };
+      })
+      .filter(v => v && v.label);
+  }
+
+  function mapProductFromDb(row) {
+    const sizesStock = normalizeVariantList(row.sizes_stock || row.sizesStock || []);
+    const numbersStock = normalizeVariantList(row.numbers_stock || row.numbersStock || []);
+
+    return {
+      id: row.id,
+      nome: row.nome || '',
+      preco: parseMoney(row.preco || 0),
+      categoria: row.categoria || 'Outros',
+      imagem: row.imagem || '',
+      whats: row.whats || '',
+      descricao: row.descricao || '',
+      sizesStock,
+      numbersStock,
+      sizes: Array.isArray(row.sizes) ? row.sizes : sizesStock.map(v => v.label),
+      numbers: Array.isArray(row.numbers) ? row.numbers : numbersStock.map(v => v.label),
+      hideSizes: Boolean(row.hide_sizes ?? row.hideSizes),
+      hideNumbers: Boolean(row.hide_numbers ?? row.hideNumbers)
+    };
   }
 
   function getVariantOptions(product, stockField, legacyField) {
@@ -59,42 +94,100 @@
     const legacy = Array.isArray(product?.[legacyField])
       ? product[legacyField]
       : String(product?.[legacyField] || '').split(',').map(x => x.trim()).filter(Boolean);
+
     return legacy
       .flatMap(label => splitLabels(label).map(part => ({ label: part, stock: null })))
       .filter(v => v.label);
   }
 
-  function firebaseReadyConfig() {
-    const cfg = window.FIREBASE_CONFIG || {};
-    return cfg.apiKey && !String(cfg.apiKey).includes('YOUR_');
+  function supabaseReadyConfig() {
+    const cfg = window.SUPABASE_CONFIG || {};
+    return Boolean(cfg.url && cfg.anonKey);
   }
 
-  function initFirebase() {
-    if (!window.firebase || !firebaseReadyConfig()) return;
-    if (!firebase.apps.length) firebase.initializeApp(window.FIREBASE_CONFIG);
-    db = firebase.firestore();
-    firebaseEnabled = true;
+  function initSupabase() {
+    if (!window.supabase || !supabaseReadyConfig()) return;
+    const cfg = window.SUPABASE_CONFIG;
+    supabaseClient = window.supabase.createClient(cfg.url, cfg.anonKey);
+    supabaseEnabled = true;
+  }
+
+  function getOrCreateCartSessionId() {
+    let sessionId = localStorage.getItem(STORAGE_KEYS.cartSession);
+    if (!sessionId) {
+      sessionId = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      localStorage.setItem(STORAGE_KEYS.cartSession, sessionId);
+    }
+    return sessionId;
   }
 
   async function loadProducts() {
-    if (firebaseEnabled) {
+    if (supabaseEnabled) {
       try {
-        const snap = await db.collection('products').orderBy('nome').get();
-        products = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        localStorage.setItem(STORAGE_KEYS.products, JSON.stringify(products));
-        return;
+        const { data, error } = await supabaseClient
+          .from('products')
+          .select('*')
+          .order('nome', { ascending: true });
+
+        if (!error && Array.isArray(data)) {
+          products = data.map(mapProductFromDb);
+          localStorage.setItem(STORAGE_KEYS.products, JSON.stringify(products));
+          return;
+        }
       } catch (_) {}
     }
+
     products = JSON.parse(localStorage.getItem(STORAGE_KEYS.products)) || [];
+  }
+
+  async function loadCart() {
+    cart = JSON.parse(localStorage.getItem(STORAGE_KEYS.cart)) || [];
+    if (!supabaseEnabled) return;
+
+    try {
+      const { data, error } = await supabaseClient
+        .from('carts')
+        .select('items')
+        .eq('session_id', cartSessionId)
+        .maybeSingle();
+
+      if (!error && data && Array.isArray(data.items)) {
+        cart = data.items;
+        localStorage.setItem(STORAGE_KEYS.cart, JSON.stringify(cart));
+      }
+    } catch (_) {}
   }
 
   async function saveOrder(order) {
     const list = JSON.parse(localStorage.getItem(STORAGE_KEYS.orders)) || [];
     list.unshift(order);
     localStorage.setItem(STORAGE_KEYS.orders, JSON.stringify(list));
-    if (firebaseEnabled) {
-      try { await db.collection('orders').doc(order.numero).set(order); } catch (_) {}
-    }
+
+    if (!supabaseEnabled) return;
+
+    try {
+      await supabaseClient.from('orders').insert({
+        numero: order.numero,
+        data: order.data,
+        cliente: order.cliente,
+        itens: order.itens,
+        total_parcial: parseMoney(order.totalParcial),
+        status: order.status || 'enviado_whatsapp'
+      });
+    } catch (_) {}
+  }
+
+  async function saveCart() {
+    localStorage.setItem(STORAGE_KEYS.cart, JSON.stringify(cart));
+    if (!supabaseEnabled) return;
+
+    try {
+      await supabaseClient.from('carts').upsert({
+        session_id: cartSessionId,
+        items: cart,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'session_id' });
+    } catch (_) {}
   }
 
   function renderCategoryFilter() {
@@ -184,6 +277,7 @@
   function addToCart(index) {
     const p = products[index];
     if (!p) return;
+
     const size = p.hideSizes ? '' : (document.getElementById(`size-${index}`)?.value || '');
     const number = p.hideNumbers ? '' : (document.getElementById(`num-${index}`)?.value || '');
     const sizeOptions = getVariantOptions(p, 'sizesStock', 'sizes');
@@ -199,6 +293,7 @@
       alert('Este produto está sem estoque de tamanhos no momento.');
       return;
     }
+
     if (numberOutOfStock) {
       alert('Este produto está sem estoque de numeração no momento.');
       return;
@@ -208,6 +303,7 @@
       alert('Selecione um tamanho disponível antes de adicionar ao carrinho.');
       return;
     }
+
     if (hasNumbers && !number) {
       alert('Selecione uma numeração disponível antes de adicionar ao carrinho.');
       return;
@@ -218,6 +314,8 @@
       selectedSize: size,
       selectedNumber: number
     });
+
+    saveCart();
     renderCart();
   }
 
@@ -245,6 +343,7 @@
     itemsRoot.querySelectorAll('[data-rm]').forEach(el => {
       el.addEventListener('click', () => {
         cart.splice(parseInt(el.dataset.rm, 10), 1);
+        saveCart();
         renderCart();
       });
     });
@@ -264,15 +363,24 @@
       alert('Preencha todos os campos obrigatórios.');
       return null;
     }
+
     if (cpf.replace(/\D/g, '').length !== 11) {
       alert('CPF inválido.');
       return null;
     }
+
     if (cep.replace(/\D/g, '').length !== 8) {
       alert('CEP inválido.');
       return null;
     }
-    return { nome, cpf, contato, formaPagamento, endereco: `Rua ${rua}, Nº ${numero}, ${cidade}, CEP ${cep}` };
+
+    return {
+      nome,
+      cpf,
+      contato,
+      formaPagamento,
+      endereco: `Rua ${rua}, Nº ${numero}, ${cidade}, CEP ${cep}`
+    };
   }
 
   async function finishOrder() {
@@ -280,6 +388,7 @@
       alert('Carrinho vazio.');
       return;
     }
+
     const client = validateClient();
     if (!client) return;
 
@@ -294,25 +403,34 @@
     });
 
     msg += `\n*Total dos produtos:* R$ ${totalParcial.toFixed(2)}\n`;
-    msg += `*Frete:* será calculado pelo vendedor no WhatsApp\n`;
+    msg += '*Frete:* será calculado pelo vendedor no WhatsApp\n';
     msg += `*Total parcial (sem frete):* R$ ${totalParcial.toFixed(2)}\n`;
-    msg += `\n*Dados do cliente*\n`;
+    msg += '\n*Dados do cliente*\n';
     msg += `Nome: ${client.nome}\nCPF: ${client.cpf}\nContato: ${client.contato}\nPagamento: ${client.formaPagamento}\nEndereço: ${client.endereco}\n`;
 
     if (client.formaPagamento === 'PIX') {
       msg += `\n*Pagamento via PIX*\nChave PIX: ${PIX_KEY}\nFavor enviar o comprovante após o pagamento.\n`;
     } else {
-      msg += `\nForma de pagamento: consulte o vendedor.\n`;
+      msg += '\nForma de pagamento: consulte o vendedor.\n';
     }
 
     await saveOrder({
       numero: numeroPedido,
       data: dataPedido,
       cliente: client,
-      itens: cart.map(i => ({ nome: i.nome, valor: parseMoney(i.preco), tamanho: i.selectedSize || '', numeracao: i.selectedNumber || '' })),
+      itens: cart.map(i => ({
+        nome: i.nome,
+        valor: parseMoney(i.preco),
+        tamanho: i.selectedSize || '',
+        numeracao: i.selectedNumber || ''
+      })),
       totalParcial,
       status: 'enviado_whatsapp'
     });
+
+    cart = [];
+    await saveCart();
+    renderCart();
 
     const url = `https://wa.me/${CHECKOUT_NUMBER}?text=${encodeURIComponent(msg)}`;
     const tab = window.open(url, '_blank');
@@ -320,7 +438,9 @@
   }
 
   function copyPix() {
-    navigator.clipboard?.writeText(PIX_KEY).then(() => alert('PIX copiado.')).catch(() => alert(`PIX: ${PIX_KEY}`));
+    navigator.clipboard?.writeText(PIX_KEY)
+      .then(() => alert('PIX copiado.'))
+      .catch(() => alert(`PIX: ${PIX_KEY}`));
   }
 
   function toggleCart() {
@@ -328,8 +448,11 @@
   }
 
   async function init() {
-    initFirebase();
+    initSupabase();
+    cartSessionId = getOrCreateCartSessionId();
     await loadProducts();
+    await loadCart();
+
     renderCategoryFilter();
     renderCatalog();
     renderCart();

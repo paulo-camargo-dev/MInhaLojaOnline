@@ -4,6 +4,9 @@
     'Moda Feminina', 'Moda Masculina', 'Infantil', 'Calçados',
     'Perfume', 'Acessórios', 'Bijuterias', 'Outros'
   ];
+  const adminEmails = Array.isArray(constants.ADMIN_EMAILS)
+    ? constants.ADMIN_EMAILS.map(e => String(e || '').trim().toLowerCase()).filter(Boolean)
+    : [];
 
   const STORAGE_KEYS = {
     token: 'admin_session',
@@ -11,8 +14,8 @@
     orders: 'pedidos_publico'
   };
 
-  let db = null;
-  let firebaseEnabled = false;
+  let supabaseClient = null;
+  let supabaseEnabled = false;
   let editingId = null;
   let products = [];
   let orders = [];
@@ -73,6 +76,50 @@
       .join(',');
   }
 
+  function normalizeVariantList(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map(v => {
+        if (!v || !v.label) return null;
+        const stock = v.stock === null || v.stock === undefined ? null : Math.max(0, parseInt(v.stock, 10) || 0);
+        return { label: String(v.label).trim(), stock };
+      })
+      .filter(v => v && v.label);
+  }
+
+  function mapProductFromDb(row) {
+    const sizesStock = normalizeVariantList(row.sizes_stock || row.sizesStock || []);
+    const numbersStock = normalizeVariantList(row.numbers_stock || row.numbersStock || []);
+
+    return {
+      id: row.id,
+      nome: row.nome || '',
+      preco: parseMoney(row.preco || 0),
+      categoria: row.categoria || '',
+      imagem: row.imagem || '',
+      whats: row.whats || '',
+      descricao: row.descricao || '',
+      sizesStock,
+      numbersStock,
+      sizes: Array.isArray(row.sizes) ? row.sizes : sizesStock.map(v => v.label),
+      numbers: Array.isArray(row.numbers) ? row.numbers : numbersStock.map(v => v.label),
+      hideSizes: Boolean(row.hide_sizes ?? row.hideSizes),
+      hideNumbers: Boolean(row.hide_numbers ?? row.hideNumbers)
+    };
+  }
+
+  function mapOrderFromDb(row) {
+    return {
+      id: row.id,
+      numero: row.numero || '',
+      data: row.data || '',
+      cliente: row.cliente || {},
+      itens: Array.isArray(row.itens) ? row.itens : [],
+      totalParcial: parseMoney(row.total_parcial ?? row.totalParcial ?? 0),
+      status: row.status || ''
+    };
+  }
+
   function getVariantList(product, stockField, legacyField) {
     if (Array.isArray(product?.[stockField]) && product[stockField].length) {
       return product[stockField];
@@ -130,7 +177,7 @@
       for (let q = 0.86; q >= 0.42; q -= 0.08) {
         const webpBlob = await canvasToBlob(canvas, 'image/webp', q);
         if (webpBlob && webpBlob.size / 1024 <= targetKb) {
-          return { dataUrl: await blobToDataUrl(webpBlob), kb: Math.round(webpBlob.size / 1024), type: 'webp' };
+          return { dataUrl: await blobToDataUrl(webpBlob), blob: webpBlob, kb: Math.round(webpBlob.size / 1024), type: 'webp' };
         }
       }
 
@@ -143,19 +190,62 @@
     ctx.clearRect(0, 0, width, height);
     ctx.drawImage(img, 0, 0, width, height);
     const fallbackBlob = await canvasToBlob(canvas, 'image/jpeg', 0.55);
-    return { dataUrl: await blobToDataUrl(fallbackBlob), kb: Math.round(fallbackBlob.size / 1024), type: 'jpeg' };
+    return { dataUrl: await blobToDataUrl(fallbackBlob), blob: fallbackBlob, kb: Math.round(fallbackBlob.size / 1024), type: 'jpeg' };
   }
 
-  function firebaseReadyConfig() {
-    const cfg = window.FIREBASE_CONFIG || {};
-    return cfg.apiKey && !String(cfg.apiKey).includes('YOUR_');
+  function supabaseReadyConfig() {
+    const cfg = window.SUPABASE_CONFIG || {};
+    return Boolean(cfg.url && cfg.anonKey);
   }
 
-  function initFirebase() {
-    if (!window.firebase || !firebaseReadyConfig()) return;
-    if (!firebase.apps.length) firebase.initializeApp(window.FIREBASE_CONFIG);
-    db = firebase.firestore();
-    firebaseEnabled = true;
+  function initSupabase() {
+    if (!window.supabase || !supabaseReadyConfig()) return;
+    const cfg = window.SUPABASE_CONFIG;
+    supabaseClient = window.supabase.createClient(cfg.url, cfg.anonKey);
+    supabaseEnabled = true;
+  }
+
+  async function uploadProductImage(file) {
+    const compressed = await compressImageFile(file, 180, 1200);
+
+    if (!compressed?.blob || !supabaseEnabled) {
+      return { url: compressed?.dataUrl || '', kb: compressed?.kb || 0, source: 'local' };
+    }
+
+    const ext = compressed.type === 'webp' ? 'webp' : 'jpg';
+    const path = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
+
+    const { error } = await supabaseClient
+      .storage
+      .from('products')
+      .upload(path, compressed.blob, {
+        contentType: compressed.blob.type || `image/${ext}`,
+        upsert: false
+      });
+
+    if (error) {
+      return { url: compressed.dataUrl, kb: compressed.kb, source: 'local' };
+    }
+
+    const { data } = supabaseClient.storage.from('products').getPublicUrl(path);
+    return { url: data?.publicUrl || compressed.dataUrl, kb: compressed.kb, source: 'supabase-storage' };
+  }
+
+  function extractStoragePath(url) {
+    const txt = String(url || '');
+    const marker = '/storage/v1/object/public/products/';
+    const idx = txt.indexOf(marker);
+    if (idx < 0) return '';
+    return decodeURIComponent(txt.slice(idx + marker.length).split('?')[0]);
+  }
+
+  async function removeStorageImageByUrl(url) {
+    if (!supabaseEnabled) return;
+    const path = extractStoragePath(url);
+    if (!path) return;
+    try {
+      await supabaseClient.storage.from('products').remove([path]);
+    } catch (_) {}
   }
 
   function onLoginPage() {
@@ -166,10 +256,23 @@
     return location.pathname.toLowerCase().endsWith('admin.html');
   }
 
+  function isAllowedAdminEmail(email) {
+    if (!adminEmails.length) return true;
+    return adminEmails.includes(String(email || '').trim().toLowerCase());
+  }
+
   async function login(email, password) {
-    if (firebaseEnabled) {
-      await firebase.auth().signInWithEmailAndPassword(email, password);
-      localStorage.setItem(STORAGE_KEYS.token, 'firebase');
+    if (supabaseEnabled) {
+      const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      if (error) throw new Error('E-mail ou senha inválidos.');
+
+      const userEmail = data?.user?.email || '';
+      if (!isAllowedAdminEmail(userEmail)) {
+        await supabaseClient.auth.signOut();
+        throw new Error('Este usuário não tem permissão de administrador.');
+      }
+
+      localStorage.setItem(STORAGE_KEYS.token, data?.user?.id || 'supabase');
       return;
     }
 
@@ -182,66 +285,114 @@
   }
 
   async function logout() {
-    localStorage.removeItem(STORAGE_KEYS.token);
-    if (firebaseEnabled && firebase.auth().currentUser) {
-      await firebase.auth().signOut();
+    if (supabaseEnabled) {
+      try { await supabaseClient.auth.signOut(); } catch (_) {}
     }
+    localStorage.removeItem(STORAGE_KEYS.token);
   }
 
-  function isLogged() {
+  async function isLogged() {
+    if (supabaseEnabled) {
+      const { data } = await supabaseClient.auth.getSession();
+      const userEmail = data?.session?.user?.email || '';
+      const ok = Boolean(data?.session?.user) && isAllowedAdminEmail(userEmail);
+      if (!ok && data?.session?.user) {
+        try { await supabaseClient.auth.signOut(); } catch (_) {}
+      }
+      if (ok) localStorage.setItem(STORAGE_KEYS.token, data.session.user.id || 'supabase');
+      return ok;
+    }
     return Boolean(localStorage.getItem(STORAGE_KEYS.token));
   }
 
   async function loadProducts() {
-    if (firebaseEnabled) {
+    if (supabaseEnabled) {
       try {
-        const snap = await db.collection('products').orderBy('nome').get();
-        products = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        localStorage.setItem(STORAGE_KEYS.products, JSON.stringify(products));
-        return;
+        const { data, error } = await supabaseClient
+          .from('products')
+          .select('*')
+          .order('nome', { ascending: true });
+
+        if (!error && Array.isArray(data)) {
+          products = data.map(mapProductFromDb);
+          localStorage.setItem(STORAGE_KEYS.products, JSON.stringify(products));
+          return;
+        }
       } catch (_) {}
     }
+
     products = JSON.parse(localStorage.getItem(STORAGE_KEYS.products)) || [];
   }
 
   async function loadOrders() {
-    if (firebaseEnabled) {
+    if (supabaseEnabled) {
       try {
-        const snap = await db.collection('orders').orderBy('data', 'desc').get();
-        orders = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      } catch (_) {
-        orders = JSON.parse(localStorage.getItem(STORAGE_KEYS.orders)) || [];
-      }
-      return;
+        const { data, error } = await supabaseClient
+          .from('orders')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (!error && Array.isArray(data)) {
+          orders = data.map(mapOrderFromDb);
+          return;
+        }
+      } catch (_) {}
     }
+
     orders = JSON.parse(localStorage.getItem(STORAGE_KEYS.orders)) || [];
   }
 
   async function persistProduct(product) {
-    if (firebaseEnabled) {
+    if (supabaseEnabled) {
+      const payload = {
+        nome: product.nome,
+        preco: parseMoney(product.preco),
+        categoria: product.categoria,
+        imagem: product.imagem,
+        whats: product.whats,
+        descricao: product.descricao,
+        sizes_stock: product.sizesStock,
+        numbers_stock: product.numbersStock,
+        hide_sizes: !!product.hideSizes,
+        hide_numbers: !!product.hideNumbers
+      };
+
       if (product.id) {
-        const id = product.id;
-        const payload = { ...product };
-        delete payload.id;
-        await db.collection('products').doc(id).set(payload, { merge: true });
+        const { error } = await supabaseClient
+          .from('products')
+          .update(payload)
+          .eq('id', product.id);
+        if (error) throw error;
       } else {
-        const ref = await db.collection('products').add(product);
-        product.id = ref.id;
+        const { data, error } = await supabaseClient
+          .from('products')
+          .insert(payload)
+          .select('*')
+          .single();
+        if (error) throw error;
+        if (data?.id) product.id = data.id;
       }
     } else {
-      if (!product.id) product.id = 'local-' + Date.now();
+      if (!product.id) product.id = `local-${Date.now()}`;
     }
 
     const i = products.findIndex(p => p.id === product.id);
     if (i >= 0) products[i] = product;
     else products.unshift(product);
+
     localStorage.setItem(STORAGE_KEYS.products, JSON.stringify(products));
   }
 
   async function removeProduct(id) {
-    if (firebaseEnabled) {
-      try { await db.collection('products').doc(id).delete(); } catch (_) {}
+    const current = products.find(p => p.id === id);
+    await removeStorageImageByUrl(current?.imagem);
+
+    if (supabaseEnabled) {
+      try {
+        await supabaseClient.from('products').delete().eq('id', id);
+      } catch (_) {}
     }
+
     products = products.filter(p => p.id !== id);
     localStorage.setItem(STORAGE_KEYS.products, JSON.stringify(products));
   }
@@ -267,10 +418,10 @@
         <div class="product-main">
           <img class="product-thumb" src="${p.imagem || 'img/placeholder.jpg'}" alt="${p.nome || 'Produto'}" onerror="this.onerror=null;this.src='img/placeholder.jpg'">
           <div>
-          <strong>${p.nome || 'Produto'}</strong>
-          <small>${p.categoria || 'Sem categoria'} • ${money(p.preco || 0)}</small>
-          <small>Tamanhos: ${p.hideSizes ? 'Oculto' : (getVariantList(p, 'sizesStock', 'sizes').map(v => v.stock === null || v.stock === undefined ? v.label : `${v.label}(${v.stock})`).join(', ') || '-')}</small>
-          <small>Numeração: ${p.hideNumbers ? 'Oculta' : (getVariantList(p, 'numbersStock', 'numbers').map(v => v.stock === null || v.stock === undefined ? v.label : `${v.label}(${v.stock})`).join(', ') || '-')}</small>
+            <strong>${p.nome || 'Produto'}</strong>
+            <small>${p.categoria || 'Sem categoria'} • ${money(p.preco || 0)}</small>
+            <small>Tamanhos: ${p.hideSizes ? 'Oculto' : (getVariantList(p, 'sizesStock', 'sizes').map(v => v.stock === null || v.stock === undefined ? v.label : `${v.label}(${v.stock})`).join(', ') || '-')}</small>
+            <small>Numeração: ${p.hideNumbers ? 'Oculta' : (getVariantList(p, 'numbersStock', 'numbers').map(v => v.stock === null || v.stock === undefined ? v.label : `${v.label}(${v.stock})`).join(', ') || '-')}</small>
           </div>
         </div>
         <div class="actions">
@@ -325,6 +476,7 @@
   function fillForm(id) {
     const p = products.find(x => x.id === id);
     if (!p) return;
+
     editingId = id;
     const form = document.getElementById('productForm');
     form.nome.value = p.nome || '';
@@ -338,8 +490,13 @@
     form.hideSizes.checked = !!p.hideSizes;
     form.hideNumbers.checked = !!p.hideNumbers;
     form.descricao.value = p.descricao || '';
+
     const status = document.getElementById('imgStatus');
-    if (status) status.textContent = p.imagem ? 'Imagem atual carregada. Selecione outra apenas se quiser trocar.' : 'Sem imagem. Selecione um arquivo.';
+    if (status) {
+      status.textContent = p.imagem
+        ? 'Imagem atual carregada. Selecione outra apenas se quiser trocar.'
+        : 'Sem imagem. Selecione um arquivo.';
+    }
   }
 
   async function handleFormSubmit(e) {
@@ -347,14 +504,22 @@
     const f = e.target;
     const imageFile = f.imagemFile.files?.[0];
     const status = document.getElementById('imgStatus');
+    const previous = editingId ? products.find(x => x.id === editingId) : null;
     let imagemFinal = f.imagem.value.trim();
 
     if (imageFile) {
       if (status) status.textContent = 'Processando imagem e reduzindo tamanho...';
-      const compressed = await compressImageFile(imageFile, 180, 1200);
-      imagemFinal = compressed.dataUrl;
-      if (status) status.textContent = `Imagem pronta (${compressed.kb}KB, ${compressed.type.toUpperCase()}).`;
+      const uploaded = await uploadProductImage(imageFile);
+      imagemFinal = uploaded.url;
+      if (status) {
+        status.textContent = uploaded.source === 'supabase-storage'
+          ? `Imagem enviada ao Supabase Storage (${uploaded.kb}KB).`
+          : `Imagem pronta localmente (${uploaded.kb}KB).`;
+      }
     }
+
+    const sizesStock = parseVariantStockInput(f.sizes.value);
+    const numbersStock = parseVariantStockInput(f.numbers.value);
 
     const product = {
       id: editingId || undefined,
@@ -363,10 +528,10 @@
       categoria: f.categoria.value,
       imagem: imagemFinal,
       whats: f.whats.value.trim(),
-      sizesStock: parseVariantStockInput(f.sizes.value),
-      numbersStock: parseVariantStockInput(f.numbers.value),
-      sizes: parseVariantStockInput(f.sizes.value).map(v => v.label),
-      numbers: parseVariantStockInput(f.numbers.value).map(v => v.label),
+      sizesStock,
+      numbersStock,
+      sizes: sizesStock.map(v => v.label),
+      numbers: numbersStock.map(v => v.label),
       hideSizes: !!f.hideSizes.checked,
       hideNumbers: !!f.hideNumbers.checked,
       descricao: f.descricao.value.trim()
@@ -378,6 +543,11 @@
     }
 
     await persistProduct(product);
+
+    if (imageFile && previous?.imagem && previous.imagem !== imagemFinal) {
+      await removeStorageImageByUrl(previous.imagem);
+    }
+
     editingId = null;
     f.reset();
     f.imagem.value = '';
@@ -388,6 +558,7 @@
   function getFilteredProducts() {
     const q = (document.getElementById('searchProducts')?.value || '').trim().toLowerCase();
     const cat = (document.getElementById('filterProductsCategory')?.value || '').trim().toLowerCase();
+
     return products.filter(p => {
       const name = (p.nome || '').toLowerCase();
       const category = (p.categoria || '').toLowerCase();
@@ -421,7 +592,7 @@
   }
 
   async function setupLoginPage() {
-    if (isLogged()) {
+    if (await isLogged()) {
       location.href = 'admin.html';
       return;
     }
@@ -429,6 +600,7 @@
     document.getElementById('loginBtn').addEventListener('click', async () => {
       const email = document.getElementById('email').value.trim();
       const password = document.getElementById('password').value;
+
       try {
         await login(email, password);
         location.href = 'admin.html';
@@ -439,7 +611,7 @@
   }
 
   async function setupAdminPage() {
-    if (!isLogged()) {
+    if (!await isLogged()) {
       location.href = 'admin-login.html';
       return;
     }
@@ -460,7 +632,7 @@
   }
 
   async function init() {
-    initFirebase();
+    initSupabase();
     if (onLoginPage()) await setupLoginPage();
     if (onAdminPage()) await setupAdminPage();
   }
