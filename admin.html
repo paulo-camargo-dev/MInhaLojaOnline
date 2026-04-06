@@ -1,0 +1,62 @@
+﻿<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Painel Admin | Minha Loja</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+  <header class="admin-header">
+    <h1>Painel Administrativo</h1>
+    <div>
+      <a href="index.html" class="ghost">Ver vitrine pública</a>
+      <button id="logoutBtn" class="danger" type="button">Sair</button>
+    </div>
+  </header>
+
+  <main class="admin-page">
+    <section class="card">
+      <h2>Cadastro de Produtos</h2>
+      <form id="productForm" class="grid-form">
+        <input name="nome" placeholder="Nome do produto *" required>
+        <input name="preco" placeholder="Preço *" required>
+        <select name="categoria" id="categoriaSelect" required></select>
+        <input name="imagemFile" type="file" accept="image/*" capture="environment">
+        <input name="imagem" type="hidden">
+        <input name="whats" placeholder="WhatsApp vendedor (ex.: 11913563576) *" required>
+        <input name="sizes" placeholder="Tamanhos com estoque (ex.: P:3,M:5,G:0,GG:2)">
+        <input name="numbers" placeholder="Numeração com estoque (ex.: 34:1,36:0,38:4)">
+        <label><input type="checkbox" name="hideSizes"> Ocultar tamanhos na vitrine</label>
+        <label><input type="checkbox" name="hideNumbers"> Ocultar numeração na vitrine</label>
+        <small id="imgStatus">Imagem: você pode enviar direto do celular/computador. Compressão automática até ~180KB.</small>
+        <textarea name="descricao" placeholder="Descrição"></textarea>
+        <button type="submit" class="primary">Salvar produto</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Produtos Cadastrados</h2>
+      <div class="products-tools">
+        <input id="searchProducts" placeholder="Buscar produto por nome, categoria...">
+        <select id="filterProductsCategory" aria-label="Filtrar categoria">
+          <option value="">☰ Todas categorias</option>
+        </select>
+      </div>
+      <div id="productsList"></div>
+    </section>
+
+    <section class="card">
+      <h2>Pedidos</h2>
+      <input id="searchOrders" placeholder="Buscar por PED-xxxxxx ou nome do cliente">
+      <div id="ordersList"></div>
+    </section>
+  </main>
+
+  <script src="firebase-config.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+﻿<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Minha Loja | Vitrine</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <span class="brand-badge">🏬</span>
+      <div>
+        <h1>Minha Loja Online</h1>
+        <small>Moda, beleza e acessórios</small>
+      </div>
+    </div>
+    <nav>
+      <a href="admin-login.html" class="ghost-btn">Área do Administrador</a>
+      <button class="cart-btn" id="cartToggle" type="button">🛒 <span id="cartCount">0</span></button>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <div class="hero-overlay">
+      <h2>Nossos Produtos</h2>
+      <p>Escolha por categoria, tamanho e numeração com atendimento no WhatsApp.</p>
+    </div>
+  </section>
+
+  <main class="page">
+    <section class="category-filter" id="categoryFilter"></section>
+    <section id="catalogSections"></section>
+  </main>
+
+  <aside class="cart-panel" id="cartPanel">
+    <h3>Finalizar Pedido</h3>
+    <div id="cartItems"></div>
+    <div class="summary" id="cartSummary"></div>
+
+    <input id="clienteNome" placeholder="Nome completo *">
+    <input id="clienteCpf" placeholder="CPF *">
+    <input id="clienteContato" placeholder="Contato (WhatsApp) *">
+    <select id="formaPagamento">
+      <option value="">Forma de pagamento *</option>
+      <option value="PIX">PIX</option>
+      <option value="Consulte o vendedor">Consulte o vendedor</option>
+    </select>
+    <input id="enderecoRua" placeholder="Rua *">
+    <input id="enderecoNumero" placeholder="Número *">
+    <input id="enderecoCidade" placeholder="Cidade *">
+    <input id="enderecoCep" placeholder="CEP *">
+
+    <p class="shipping-note">Frete será calculado e informado pelo vendedor no WhatsApp.</p>
+
+    <button class="primary" id="copyPixBtn" type="button">💳 Copiar PIX</button>
+    <button class="primary" id="finishBtn" type="button">Finalizar WhatsApp</button>
+  </aside>
+
+  <script src="firebase-config.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script src="public.js"></script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+﻿<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Login | Minha Loja</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+  <main class="login-wrap">
+    <section class="login-card">
+      <h1>Login Administrativo</h1>
+      <p>Acesse para cadastrar produtos e consultar pedidos.</p>
+      <input id="email" placeholder="E-mail" type="email">
+      <input id="password" placeholder="Senha" type="password">
+      <button id="loginBtn" class="primary" type="button">Entrar</button>
+      <small id="loginMsg">Use credenciais Firebase ou fallback local: <b>admin@local</b> / <b>123456</b></small>
+      <a href="index.html">Ir para vitrine pública</a>
+    </section>
+  </main>
+
+  <script src="firebase-config.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>
