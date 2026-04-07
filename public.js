@@ -12,7 +12,7 @@
     'Moda Feminina', 'Moda Masculina', 'Infantil', 'Calçados',
     'Perfume', 'Acessórios', 'Bijuterias', 'Outros'
   ];
-  const PIX_KEY = constants.PIX_KEY || '11913563576';
+  const PIX_KEY = constants.PIX_KEY || '';
   const CHECKOUT_NUMBER = constants.CHECKOUT_WHATSAPP_NUMBER || '5511913563576';
 
   let products = [];
